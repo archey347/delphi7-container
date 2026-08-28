@@ -1,0 +1,53 @@
+# PLAN.md Phase 1 -> image `d7-base`: a 32-bit Wine that is booted, has the
+# runtime DLLs D7 needs, and is pinned to WinXP. No Delphi in here yet.
+
+FROM debian:bookworm-slim
+
+# PLAN Phase 0: WineHQ `stable` first. Rebuild with `--build-arg WINE_BRANCH=staging`
+# if InstallShield misbehaves in Phase 2.
+ARG WINE_BRANCH=stable
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# WineHQ repo + the i386 runtime, plus the CAB/archive/X helpers that winetricks
+# and (later) the InstallShield GUI pull in. wget/xz/p7zip/cabextract are kept
+# because winetricks shells out to them at runtime.
+RUN dpkg --add-architecture i386 \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates wget gnupg xz-utils p7zip-full cabextract \
+      xvfb xauth winbind fonts-liberation \
+ && install -dm755 /etc/apt/keyrings \
+ && wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
+ && wget -qNP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
+ && apt-get update \
+ && apt-get install -y --install-recommends "winehq-${WINE_BRANCH}" \
+ && wget -qO /usr/local/bin/winetricks https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks \
+ && chmod 755 /usr/local/bin/winetricks \
+ && apt-get purge -y --auto-remove gnupg \
+ && rm -rf /var/lib/apt/lists/*
+
+# Rootless Podman maps the invoking host user onto uid 1000 via --userns=keep-id.
+RUN useradd -m -u 1000 -s /bin/bash dev
+USER dev
+WORKDIR /home/dev
+
+# mscoree/mshtml disabled: otherwise `wineboot` blocks forever trying to pull
+# wine-mono/-gecko with the installer dialog stuck on the headless Xvfb. D7 is
+# native win32 and needs neither.
+ENV WINEARCH=win32 \
+    WINEPREFIX=/home/dev/d7 \
+    WINEDEBUG=-all \
+    WINEDLLOVERRIDES=mscoree,mshtml=
+
+# One layer so the prefix, its fonts and the version pin travel together. wineboot
+# and winetricks both want an X server, hence the throwaway Xvfb; `wineserver -w`
+# blocks until each step's background wineserver has quiesced. Only `corefonts`
+# here (small, from the winetricks-default mirror); riched20/gdiplus/mfc42 use
+# Wine builtins — add back individually if the D7 install actually needs them.
+RUN xvfb-run -a sh -eux -c '\
+      wineboot --init; wineserver -w; \
+      winetricks -q corefonts; wineserver -w; \
+      winetricks -q winxp; wineserver -w'
+
+CMD ["wine", "cmd"]

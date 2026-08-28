@@ -1,0 +1,12 @@
+# Private — D7 license forbids redistribution. Keep disc/prefix images, vendored
+# third-party source, licence slips and any built image/tarball out of the repo.
+/images/
+/media
+*.iso
+*.slip
+*.tar
+*.tar.*
+d7prefix*
+*.env
+/vendor/*
+!/vendor/.gitkeep
