@@ -1,0 +1,11 @@
+# component: djson
+# desc: DJSON v1.0 — RTL-only JSON unit; dcu on the search path, no palette package
+
+USER root
+COPY --chown=dev:dev scripts/install-djson.sh /usr/local/bin/
+RUN --mount=type=bind,source=vendor/djson,target=/mnt/djson,z \
+    set -eux; \
+    install -d -o dev -g dev /opt/djson; \
+    su -p -s /bin/bash dev -c 'install-djson.sh /mnt/djson /opt/djson'
+USER dev
+ENV DJSON=/opt/djson

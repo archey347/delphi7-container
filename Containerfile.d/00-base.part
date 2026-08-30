@@ -1,0 +1,33 @@
+# component: base   (always — every profile starts here)
+# desc: bake the Phase 3 prefix snapshot onto d7-base; PATH + DLL overrides for the IDE
+
+FROM d7-base
+
+# Bind-mount the snapshot (no COPY layer for 1.1 GB), swap it in for the empty
+# booted prefix from d7-base, and fix ownership so wine's prefix check passes.
+# W: -> /work gives the project mount a drive letter (dangling until run -v).
+USER root
+RUN --mount=type=bind,source=d7prefix.tar,target=/mnt/d7prefix.tar,z \
+    set -eux; \
+    rm -rf /home/dev/d7; mkdir -p /home/dev/d7; \
+    tar xf /mnt/d7prefix.tar -C /home/dev/d7; \
+    chown -R dev:dev /home/dev/d7; \
+    ln -sf /work /home/dev/d7/dosdevices/w:; \
+    chown -h dev:dev /home/dev/d7/dosdevices/w:; \
+    ln -sfn /opt /home/dev/d7/drive_c/opt; \
+    chown -h dev:dev /home/dev/d7/drive_c/opt; \
+    install -d -o dev -g dev -m 700 /run/user/1000
+USER dev
+
+# Component installers drop dcus under /opt/<name>; the symlink above makes that
+# same tree reachable as C:\opt\<name> so the IDE library path and headless
+# `dcc32 -U` can use the Windows form.
+
+# dcc32 / delphi32 on PATH for headless compiles; XDG_RUNTIME_DIR silences a wine
+# warning on every invocation. WINEDLLOVERRIDES overrides d7-base's
+# `mscoree,mshtml=`: .NET/Mono stays off (no wineboot prompt to fear — the prefix
+# is already booted), but mshtml goes back to builtin, without which the D7 IDE
+# throws at startup and quits (it hosts a WebBrowser on the Welcome page).
+ENV PATH="/home/dev/d7/drive_c/Program Files/Borland/Delphi7/Bin:${PATH}" \
+    XDG_RUNTIME_DIR=/run/user/1000 \
+    WINEDLLOVERRIDES=mscoree=

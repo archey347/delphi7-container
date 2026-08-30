@@ -1,0 +1,14 @@
+# component: mwajpeg
+# desc: MWA Software JPEG Component Library v1.10.0 — TDBJPEGImage design pkg + dcus
+
+# Additive component install (unlike indy10, nothing is removed): register the
+# design package on the palette and drop the dcus at C:\opt\mwajpeg\dcu, on the
+# IDE library path. Headless builds add that dir to -U.
+USER root
+COPY --chown=dev:dev scripts/install-mwajpeg.sh /usr/local/bin/
+RUN --mount=type=bind,source=vendor/mwajpeg,target=/mnt/mwajpeg,z \
+    set -eux; \
+    install -d -o dev -g dev /opt/mwajpeg; \
+    su -p -s /bin/bash dev -c 'install-mwajpeg.sh /mnt/mwajpeg /opt/mwajpeg'
+USER dev
+ENV MWAJPEG=/opt/mwajpeg

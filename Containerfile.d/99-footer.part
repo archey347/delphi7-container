@@ -1,0 +1,3 @@
+# component: footer   (always — closes the image)
+
+CMD ["wine", "explorer", "/desktop=d7,1600x1000", "C:\\Program Files\\Borland\\Delphi7\\Bin\\delphi32.exe"]

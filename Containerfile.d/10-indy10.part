@@ -1,0 +1,20 @@
+# component: indy10
+# desc: Indy 10.6.3.12 built for D7, swapped in for the bundled Indy 9 (IDE + headless)
+
+# The two Indy generations can't coexist as loaded packages (same unit names), so
+# swap-indy-ide.sh strips Indy 9 + the IntraWeb design package and registers Indy
+# 10's. Headless `dcc32` uses $INDY10/dcu (put first on -U); the IDE gets it via
+# the library path + Bin\*.bpl the swap sets. Baked so CI compiles don't rebuild
+# Indy every run.
+USER root
+COPY --chown=dev:dev scripts/build-indy10.sh scripts/swap-indy-ide.sh /usr/local/bin/
+RUN --mount=type=bind,source=vendor/indy10,target=/mnt/indy10,z \
+    set -eux; \
+    install -d -o dev -g dev /opt/indy10; \
+    su -p -s /bin/bash dev -c ' \
+      cp -a /mnt/indy10 /tmp/indy10 && \
+      build-indy10.sh /tmp/indy10 /opt/indy10 && \
+      swap-indy-ide.sh /opt/indy10 && \
+      rm -rf /tmp/indy10 /opt/indy10/build'
+USER dev
+ENV INDY10=/opt/indy10

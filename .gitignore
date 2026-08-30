@@ -10,3 +10,6 @@ d7prefix*
 *.env
 /vendor/*
 !/vendor/.gitkeep
+
+# non-default profile renders (scripts/build-image.sh --profile <x>)
+/.build/
