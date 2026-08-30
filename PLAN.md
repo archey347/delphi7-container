@@ -16,7 +16,7 @@ own into the image is covered in `USING.md`.
 
 ---
 
-## Status (2026-08-29)
+## Status (2026-08-30)
 
 | Phase | State |
 | --- | --- |
@@ -24,7 +24,7 @@ own into the image is covered in `USING.md`.
 | 1 · `d7-base` (`Containerfile.base`) | ✅ built, 4.19 GB |
 | 2 · interactive install → `d7-prefix` volume | ✅ done (MSI, GUI over host X socket) |
 | 3 · snapshot → `d7prefix.tar` | ✅ 1.1 GB + `.sha256` |
-| 4 · `d7-dev` (`Containerfile`) | ✅ built; now also bakes Indy 10 at `/opt/indy10` (`$INDY10`) |
+| 4 · `d7-dev` — templated from `Containerfile.d/*.part` via `scripts/build-image.sh` | ✅ `default` profile = prefix + indy10 + mwajpeg + djson |
 | 5 · run the IDE (`scripts/run-ide.sh`) | ✅ IDE runs; built + ran a test app in it |
 | 5b · database access (runtime) | ☐ designed, not built — see below |
 | 6 · headless `dcc32` | ⏳ compiler verified; Indy 10 builds + links in the image (test exe → `10.6.3.12`); target project not built yet |
@@ -44,16 +44,22 @@ still exists (only needed for re-running the interactive install).
       `dcc32.cfg`.** Conditional defines, unit/lib paths and output settings
       normally live only in the IDE's `.dof`; a headless build needs them in a
       `dcc32.cfg` next to the `.dpr`.
-- [x] **`DJSON` acquired** — DJSON v1.0 (Carlos Renan Silveira, MIT), vendored at
-      `vendor/djson/` (`src/DJson.pas`, prebuilt D7 `lib-d7/DJson.dcu` +
-      `DJsonD7.dcu`/`.dcp`/`.bpl`, package project in `dpk/`, original checkout in
-      `orig/`). Representative "RTL-only vendored unit" case — no `System.JSON` on
-      D7. Wiring: `USING.md` → *Vendored units*.
-- [x] **mwajpeg acquired** — MWA Software JPEG Component Library v1.10.0, vendored
-      at `vendor/mwajpeg/` (full `src/`, prebuilt D7 `dcu-d7/*.dcu`+`.dcp`,
-      `bpl-d7/dclmwajpgd7.bpl`+`mwajpgd7.bpl`, original installer in `orig/`).
-      Representative "needs a design-time package" case (`TDBJPEGImage` on a
-      `.dfm`). Wiring: `USING.md` → *Vendored units*.
+- [x] **`DJSON` acquired + installed** — DJSON v1.0 (Carlos Renan Silveira, MIT),
+      vendored at `vendor/djson/`. Representative "RTL-only vendored unit" case —
+      no `System.JSON` on D7. Installed as a workstation component by
+      `scripts/install-djson.sh` (fragment `Containerfile.d/30-djson.part`,
+      `default` profile) → `C:\opt\djson\dcu`. Verified: a console program
+      `uses`ing `DJson` compiles + runs from the baked image.
+- [x] **mwajpeg acquired + installed** — MWA Software JPEG Component Library
+      v1.10.0, vendored at `vendor/mwajpeg/`. Representative "needs a design-time
+      package" case (`TDBJPEGImage` on a `.dfm`). Installed as a workstation
+      component by `scripts/install-mwajpeg.sh` (fragment
+      `Containerfile.d/20-mwajpeg.part`, `default` profile): `dclmwajpgd7.bpl`
+      registered in *Known Packages*, `mwajpgd7.bpl` + dcus at `C:\opt\mwajpeg\dcu`
+      on the library path. Verified headless: a program `uses`ing `jpeglib` +
+      `mwajpeg` + `mwadbjpg` compiles + runs from the baked image. Still untried:
+      opening a `.dfm` that drops `TDBJPEGImage` in the IDE to confirm the
+      component streams at design time.
 - [x] **Indy 10.6.3.12 acquired** — vendored at `vendor/indy10/` (`Lib/{System,
       Core,Protocols,...}` sources + D7 `*70.dpk` packages + `Indy70.bpg`; original
       tarballs, incl. an unused `Indy9.tar.gz`, in `orig/`). QuickReport 3
@@ -102,6 +108,10 @@ still exists (only needed for re-running the interactive install).
       was run by hand).
 - [ ] Housekeeping: `xhost -local:` reverts the X access opened for run-ide;
       prune dangling build images.
+- [ ] Confirm the Indy 10 design-time component and `TDBJPEGImage` both resolve
+      when a `.dfm` using them is opened in the IDE — the `C:\opt\…\dcu` library
+      paths only became reachable in-IDE once `drive_c/opt -> /opt` was added to
+      `00-base.part` (headless `dcc32` had been using the Unix paths).
 
 ### Phase 5b — BDE / Paradox database access (generic notes, not built)
 
@@ -258,14 +268,36 @@ sha256sum d7prefix.tar | tee d7prefix.tar.sha256   # d92a85bd...4b065
 1.1 GB. This is the golden private artifact (gitignored). TODO: wrap in
 `scripts/export-prefix.sh`.
 
-## Phase 4 — lean dev image  (`Containerfile` → `d7-dev`)  ✅
+## Phase 4 — the workstation image  (`Containerfile.d/*.part` → `d7-dev`)  ✅
 
-`FROM d7-base`, then as root in one layer:
+`d7-dev` is **one shared image** — a Delphi 7 workstation set up the way the
+team's machines are, not a per-project image (the Phase 2 install needs a human,
+so regenerating per project is not sensible). It is assembled from fragments:
+
+- `Containerfile.d/NN-<name>.part` — one Dockerfile snippet per *component*
+  (`00-base` always, then `indy10`, `mwajpeg`, `djson`, …). The `NN` prefix fixes
+  install order. Each component fragment carries its own `--mount` for its
+  `vendor/<name>` dir and `COPY`s its own `scripts/install-<name>.sh`.
+- `profiles/<name>.conf` — the list of components to install (`default` =
+  `indy10 mwajpeg djson`; `minimal` = none).
+- `scripts/build-image.sh [--profile NAME] [--with C] [--without C] [--print |
+  --check]` — resolves the component set, concatenates fragments, writes
+  `./Containerfile` (committed as the default-profile render), runs `podman build
+  -t d7-dev`. `--check` fails if the committed `Containerfile` is stale.
+
+A dev extends the workstation by adding a fragment + `install-` script + a
+profile line and rebuilding — the human install step is untouched.
+
+`00-base` = `FROM d7-base`, then as root in one layer:
 
 - bind-mount `d7prefix.tar` (`--mount=type=bind,...,z` — the `,z` is needed for
   SELinux; alternatively `podman build --security-opt label=disable`),
 - `rm -rf /home/dev/d7`, extract the tar into it, `chown -R dev:dev`,
 - `ln -s /work /home/dev/d7/dosdevices/w:` (W: → project mount, dangling until run),
+- `ln -sfn /opt /home/dev/d7/drive_c/opt` — component installers write dcus under
+  `/opt/<name>`; this makes the same tree reachable as `C:\opt\<name>`, which is
+  the form the IDE library path and `dcc32 -U` want (a Unix `/opt/...` path works
+  headless but the IDE can't resolve it),
 - `install -d -o dev -g dev -m 700 /run/user/1000`.
 
 Then `USER dev` and `ENV`:
@@ -278,20 +310,26 @@ Then `USER dev` and `ENV`:
   page). The prefix is already booted so there is no wineboot Gecko prompt to
   fear here.
 
-Then a second layer does **Indy 10** for D7 (generic, not project-specific):
-bind-mount `vendor/indy10`, then as `dev` —
-- `scripts/build-indy10.sh` → `/opt/indy10/{dcu,bpl}` (`ENV INDY10=/opt/indy10`):
-  `dcc32` the 5 `.dpk`s in order (System → Core + dclCore → Protocols + dclProtocols,
-  with `IdCompressionIntercept` precompiled `-Z` first), Fulld_7.bat flag set,
-  `.dcu` via `-N` to a shared dir but `.dcp`/`.bpl` left in the source dir.
-- `scripts/swap-indy-ide.sh /opt/indy10`: strip bundled Indy 9, copy the bpls to
-  `Bin\`, and `wine reg` the *Known Packages* / *Library* keys so the IDE loads
-  Indy 10 and not Indy 9 (+ IntraWeb design pkg dropped — it links Indy 9).
+Component fragments then layer on (each `USER root` … `USER dev`):
 
-Headless `dcc32` builds use `$INDY10/dcu` first on `-U`.
+- **`indy10`** — `build-indy10.sh` → `/opt/indy10/{dcu,bpl}` (`ENV
+  INDY10=/opt/indy10`): `dcc32` the 5 `.dpk`s in order (System → Core + dclCore →
+  Protocols + dclProtocols, `IdCompressionIntercept` precompiled `-Z` first),
+  Fulld_7.bat flag set, `.dcu` via `-N` to a shared dir but `.dcp`/`.bpl` left in
+  the source dir. Then `swap-indy-ide.sh /opt/indy10` strips bundled Indy 9, copies
+  the bpls to `Bin\`, and `wine reg`s *Known Packages* / *Library* so the IDE
+  loads Indy 10 not Indy 9 (+ IntraWeb design pkg dropped — it links Indy 9).
+- **`mwajpeg`** — `install-mwajpeg.sh` registers `dclmwajpgd7.bpl` in *Known
+  Packages*, drops `mwajpgd7.bpl` in `Bin\` and the dcus at `/opt/mwajpeg/dcu`
+  (`C:\opt\mwajpeg\dcu`) on the library path.
+- **`djson`** — `install-djson.sh` drops the prebuilt dcu at `/opt/djson/dcu`
+  (`C:\opt\djson\dcu`) on the library path; no palette package.
 
-Build: `podman build -f Containerfile -t d7-dev --security-opt label=disable .`
-(or rely on the `,z` mount flags without the `label=disable`).
+Headless `dcc32` builds put `/opt/indy10/dcu;/opt/mwajpeg/dcu;/opt/djson/dcu`
+first on `-U` (Unix or `C:\opt\…` form; both resolve).
+
+Build: `scripts/build-image.sh` (wraps `podman build -f Containerfile -t d7-dev
+--security-opt label=disable .`).
 
 Key paths inside the prefix:
 - Delphi root `C:\Program Files\Borland\Delphi7` = `…/drive_c/Program Files/Borland/Delphi7`
@@ -356,10 +394,9 @@ only if a unit pulls in something that touches the display.
 ## Phase 7 — source fixes to get a green build (project side)
 
 Project-specific; belongs in the project repo, not here. `USING.md` covers the
-recurring cases: a malformed `uses` clause in the `.dpr`, adding vendored units
-(`vendor/djson` = RTL-only, `vendor/mwajpeg` = design-time package) to the unit
-path, and putting `$INDY10/dcu` first on `-U` so Indy 10 shadows D7's bundled
-Indy 9.
+recurring cases: a malformed `uses` clause in the `.dpr`, and referencing the
+pre-installed components (`C:\opt\{indy10,mwajpeg,djson}\dcu` — `indy10` first so
+it shadows D7's bundled Indy 9) on the `dcc32.cfg` `-U`.
 
 ## Phase 8 — CI (later, out of scope now)
 
@@ -375,11 +412,23 @@ Indy 9.
 scrapbook/d7/
   PLAN.md
   Containerfile.base        # -> d7-base
-  Containerfile             # -> d7-dev  (bakes d7prefix.tar)
+  Containerfile             # -> d7-dev  (GENERATED from Containerfile.d/ by build-image.sh)
+  Containerfile.d/          # workstation image fragments, one per component
+    00-base.part            #   always: bake d7prefix.tar, PATH/DLL env, C:\opt symlink
+    10-indy10.part          #   component: indy10
+    20-mwajpeg.part         #   component: mwajpeg
+    30-djson.part           #   component: djson
+    99-footer.part          #   always: CMD
+  profiles/
+    default.conf            # indy10 + mwajpeg + djson (the team's workstation)
+    minimal.conf            # no components — base for --with experiments
   scripts/
+    build-image.sh          # assemble Containerfile.d/ -> Containerfile -> podman build
     run-ide.sh              # Phase 5 (done)
-    build-indy10.sh         # Phase 6 (done — builds Indy 10 at image-build time)
-    swap-indy-ide.sh        # Phase 6 (done — swaps Indy 9 -> 10 for the IDE)
+    build-indy10.sh         # builds Indy 10 at image-build time (used by 10-indy10.part)
+    swap-indy-ide.sh        # swaps Indy 9 -> 10 for the IDE (used by 10-indy10.part)
+    install-mwajpeg.sh      # installs mwajpeg component (used by 20-mwajpeg.part)
+    install-djson.sh        # installs djson component (used by 30-djson.part)
     build.sh               # Phase 6 (todo — the headless project compile)
     export-prefix.sh        # Phase 3 (todo — was run by hand)
   USING.md                  # how to build your own D7 project with this image

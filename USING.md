@@ -1,15 +1,37 @@
 # Building your own Delphi 7 project with this image
 
-`d7-dev` (see `PLAN.md`) is a project-agnostic Delphi 7 Enterprise environment:
-Wine + a baked D7 prefix (IDE, `dcc32`, BDE engine, QuickReport, Rave) with Indy
-10 built in. It knows nothing about any particular project. This is the checklist
-for wiring a project into it — written against a project that has the full set of
-awkward D7 dependencies: **vendored third-party units, a BDE/Paradox database,
-QuickReport, and Indy 10** (for `TIdSSLIOHandlerSocketOpenSSL`, which the Indy 9
-D7 bundles lacks).
+`d7-dev` (see `PLAN.md`) is **one shared Delphi 7 workstation image** — Wine + a
+baked D7 prefix (IDE, `dcc32`, BDE engine, QuickReport, Rave) with a curated set
+of third-party components already installed, the way a team's dev machines would
+be. All projects use the same image; you do not build one per project (the D7
+install itself needs a human, so that would not be sensible).
 
-Everything below lives in *your project's* repo, not this one. The tie-in is a
-thin overlay image plus a run wrapper.
+## What's already in the workstation
+
+The `default` profile (`profiles/default.conf`) installs:
+
+| Component | Where | Notes |
+| --- | --- | --- |
+| **Indy 10.6.3.12** | `C:\opt\indy10\dcu` + palette | swapped in for the bundled Indy 9 |
+| **mwajpeg** 1.10.0 | `C:\opt\mwajpeg\dcu` + palette | `TDBJPEGImage` design package registered |
+| **djson** 1.0 | `C:\opt\djson\dcu` | RTL-only unit, no palette entry |
+
+`C:\opt` is a symlink to `/opt` in the prefix, so both `C:\opt\<name>\dcu` and the
+Unix `/opt/<name>/dcu` work on `dcc32 -U`; the IDE library path needs the
+`C:\opt\…` form.
+
+**To add another component to the workstation** (it belongs to the *IDE setup*,
+not to one project's dependency list): drop `vendor/<name>/`, add
+`scripts/install-<name>.sh` and a `Containerfile.d/NN-<name>.part` fragment
+(model them on `20-mwajpeg.part` / `install-mwajpeg.sh`), list `<name>` in
+`profiles/default.conf`, and rerun `scripts/build-image.sh`. `--with <name>` /
+`--without <name>` build one-off variants without editing the profile.
+
+## Wiring a project in
+
+Everything below lives in *your project's* repo, not this one. The project layer
+is deliberately thin: a `dcc32.cfg`, optionally an overlay image for source
+patches, a BDE alias at container start, and a run wrapper.
 
 ---
 
@@ -17,16 +39,19 @@ thin overlay image plus a run wrapper.
 
 Keep it in the project repo (e.g. `docker/Containerfile`):
 
+Often you need no overlay at all — just mount the source and a `dcc32.cfg`
+(§2, §6). Add an overlay only for things that must be baked: source patches, or a
+project-only unit that isn't worth making a workstation component.
+
 ```dockerfile
 FROM d7-dev
 
-# Project-vendored D7 units. Copy the source (or prebuilt .dcu) in and add it to
-# the compiler's unit path via a dcc32.cfg you also ship.
-COPY --chown=dev:dev vendor/ /opt/proj-vendor/
 COPY --chown=dev:dev docker/dcc32.cfg "/home/dev/d7/drive_c/Program Files/Borland/Delphi7/Bin/dcc32.cfg"
 
-# If any vendored lib needs a design-time package in the IDE, install its .bpl
-# and put its dir on the Windows PATH (see §3).
+# A unit used only by this project (not a shared workstation component). Anything
+# reusable across projects belongs in a Containerfile.d/ fragment instead — see
+# "What's already in the workstation" above.
+COPY --chown=dev:dev vendor/proj-only/ /opt/proj-only/
 
 # BDE alias the app expects but never creates itself (see §5) — do it at
 # container start, not build time, so it can point at the run's data mount.
@@ -55,54 +80,59 @@ Many Delphi repos `.gitignore` `*.cfg`; committing this one needs `git add -f`
 
 ---
 
-## 3. Vendored units
+## 3. Third-party units — mostly already installed
 
-D7 has no package manager. Each third-party dependency is copied into the repo
-under `vendor/<name>/` with a short README recording version, licence, upstream
-URL and how it was obtained. Two shapes:
+D7 has no package manager, so each third-party dependency is vendored under
+`vendor/<name>/` (README recording version, licence, upstream, how obtained) and
+installed into the workstation image by `scripts/install-<name>.sh` from a
+`Containerfile.d/` fragment. The `default` profile already covers Indy 10,
+mwajpeg and djson (table at the top).
 
-### RTL-only unit (no components) — e.g. a JSON unit
+**Project side, all you do is reference them on `-U`** in `dcc32.cfg`:
 
-Nothing to install. Put the directory holding the `.pas` (or a prebuilt `.dcu`)
-on `-U` in `dcc32.cfg`, and on the IDE's *Library Path* if you open units that
-`use` it. Prefer **rebuilding the `.pas` against this exact D7** over trusting a
-`.dcu` built elsewhere — DCU format is locked to the compiler build.
+```
+-U"C:\opt\indy10\dcu;C:\opt\mwajpeg\dcu;C:\opt\djson\dcu;C:\Program Files\Borland\Delphi7\Lib"
+```
 
-### Needs a design-time package — e.g. a DB-aware image component on a `.dfm`
+Order matters — put `C:\opt\indy10\dcu` before `Delphi7\Lib` so Indy 10 shadows
+the bundled Indy 9 dcus (§4). The IDE side (palette + library path) is already
+set by the install scripts.
 
-The IDE can't stream the component off a `.dfm` until its design package is
-registered. In the overlay image:
+### Adding one that isn't there yet
 
-1. Copy the runtime + design `.bpl` into `Delphi7\Bin` (or any dir on the
-   Windows `PATH`).
-2. Register the design package: add it under
-   `HKCU\Software\Borland\Delphi\7.0\Known Packages` with `wine reg add`, value
-   name = the full Windows path to the `.bpl`, data = a description string.
-3. Add the unit source/`dcu` dir to the *Library Path* the same way
-   (`…\7.0\Library` → `Search Path`).
+Two shapes, both handled the same way — a fragment + `install-` script:
 
-For a **headless** `dcc32` build you only need the `.dcu`/`.pas` on `-U` — design
-packages are irrelevant. Rebuild the package from `src/` against this D7 if the
-prebuilt `.dcu` is rejected (`Fulld_7.bat` or the `.dpk` directly).
+- **RTL-only unit** (no components, e.g. djson): copy the `.dcu` (or rebuild the
+  `.pas` against this D7 — DCU format is compiler-build-locked) to
+  `/opt/<name>/dcu` and add that to the IDE *Library* → *Search Path*. No palette
+  entry. Model: `install-djson.sh`.
+- **Needs a design-time package** (a component streamed off a `.dfm`, e.g.
+  mwajpeg's `TDBJPEGImage`): also copy the runtime + design `.bpl` into
+  `Delphi7\Bin` and register the design `.bpl` under
+  `HKLM\Software\Borland\Delphi\7.0\Known Packages` (`wine reg add`, value name =
+  Windows path to the `.bpl`, data = a description). Model: `install-mwajpeg.sh`.
+  Headless `dcc32` still only needs the `.dcu` on `-U` — design packages are
+  irrelevant to it.
 
 ---
 
-## 4. Indy 10
+## 4. Indy 10 — the one component that also *removes* things
 
-Already built into `d7-dev` at `$INDY10` (`/opt/indy10/{dcu,bpl}`), and the
-image's `swap-indy-ide.sh` has already swapped it in for the bundled Indy 9 on
-the IDE side (Known Packages + Library path rewritten, IntraWeb's Indy-9-linked
-design package dropped).
+`d7-dev` builds Indy 10 at `$INDY10` (`/opt/indy10/{dcu,bpl}`) and
+`swap-indy-ide.sh` swaps it in for the bundled Indy 9 IDE-side — Known Packages +
+Library path rewritten, the bundled `Lib\Id*.dcu` / `Bin\*indy70.bpl` stripped,
+IntraWeb's Indy-9-linked design package dropped. (mwajpeg and djson are purely
+additive; Indy is the one that deletes bundled files, which is why it has to be a
+workstation component and can't be an overlay.)
 
 Project side:
 
-- **Headless build:** put `$INDY10/dcu` (`C:\opt\indy10\dcu`) **first** on `-U`
-  in `dcc32.cfg`, before `Delphi7\Lib`, so Indy 10 units shadow the bundled Indy
-  9 `.dcu`s that are still in `Lib`.
-- **Watch for Indy-9 leakage:** any `Id*` unit your project uses that isn't
-  `contain`ed in an Indy 10 package will still resolve from `Delphi7\Lib`
-  (Indy 9). A version-mismatch or missing-symbol error at link is the tell —
-  the fix is to strip `Delphi7\Lib\Id*.dcu` in the overlay image.
+- **Headless build:** put `C:\opt\indy10\dcu` **first** on `-U` in `dcc32.cfg`,
+  before `Delphi7\Lib`, so Indy 10 units shadow any bundled Indy 9 `.dcu`s.
+- **Indy-9 leakage:** `swap-indy-ide.sh` already deletes the bundled
+  `Lib\Id*.dcu`, so a missing `Id*` unit now fails loudly rather than silently
+  linking Indy 9. If that happens, the unit isn't `contain`ed in any Indy 10
+  package — add its source dir to `-U`, or the `.dpk` list in `build-indy10.sh`.
 - **Runtime:** `IdSSLOpenSSL` needs `libeay32.dll` + `ssleay32.dll` (OpenSSL
   1.0.x) beside the exe or on the Windows `PATH`.
 - **IDE:** if you use IntraWeb, re-register its design package *after* Indy 10
